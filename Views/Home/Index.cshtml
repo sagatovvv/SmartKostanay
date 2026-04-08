@@ -1,0 +1,36 @@
+﻿@{
+    ViewData["Title"] = "Home Page";
+}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Cadastre Test</title>
+</head>
+<body>
+    <h1>Cadastre UTM → Lat/Lon Test</h1>
+    <input id="cadNumber" placeholder="Введите кадастровый номер" />
+    <button onclick="getCoordinates()">Показать координаты</button>
+    <pre id="result"></pre>
+
+    <script>
+        async function getCoordinates() {
+            const cadNumber = document.getElementById("cadNumber").value;
+            const resultEl = document.getElementById("result");
+
+            try {
+                const response = await fetch(`/api/cadastre/${cadNumber}`);
+                if (!response.ok) {
+                    resultEl.textContent = 'Участок не найден';
+                    return;
+                }
+                const data = await response.json();
+                resultEl.textContent = JSON.stringify(data, null, 2);
+            } catch (err) {
+                resultEl.textContent = 'Ошибка: ' + err;
+            }
+        }
+    </script>
+</body>
+</html>
