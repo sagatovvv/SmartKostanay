@@ -21,6 +21,20 @@ namespace SmartKostanay.Services
             return await _plots.Find(x => x.CadastralNumber == cadNumber).FirstOrDefaultAsync();
         }
 
+        public async Task<IzhsLandPlot?> GetByIdAsync(string id)
+        {
+            // Проверяем, является ли переданная строка валидным ObjectId для MongoDB
+            if (!MongoDB.Bson.ObjectId.TryParse(id, out var objectId))
+            {
+                return null;
+            }
+
+            return await _plots
+                .Find(x => x.Id == id)
+                .FirstOrDefaultAsync();
+        }
+
+
         public async Task<(List<IzhsLandPlot> Items, long TotalCount)> GetFilteredAsync(
             string district, string status, int? stage, int page, int pageSize)
         {
