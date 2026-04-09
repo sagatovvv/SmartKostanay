@@ -43,7 +43,7 @@ namespace SmartKostanay.Models
         public string OverallStatus { get; set; } // "ACTIVE" | "COMPLETED" | "OVERDUE" | "EXCLUDED"
 
         [BsonElement("Stages")]
-        public List<StageDetails> Stages { get; set; }
+        public List<IzhsStage> Stages { get; set; } = new List<IzhsStage>();
 
         [BsonElement("ExcludedFromControl")]
         public bool ExcludedFromControl { get; set; }

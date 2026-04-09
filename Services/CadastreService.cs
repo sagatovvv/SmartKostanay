@@ -62,5 +62,69 @@ namespace SmartKostanay.Services
 
             return (data, totalCount);
         }
+
+        public async Task CreateAsync(IzhsLandPlot plot)
+        {
+            // Если дата выдачи не пришла, используем текущую (защита от ошибок)
+            DateTime baseDate = plot.IssueDate ?? DateTime.UtcNow;
+
+            plot.DateOfCreation = DateTime.UtcNow;
+            plot.ModifiedOn = DateTime.UtcNow;
+            plot.OverallStatus = "ACTIVE";
+
+            plot.Stages = new List<IzhsStage>
+            {
+                new IzhsStage {
+                    StageNumber = 1,
+                    Name = "Получение АПЗ и эскизного проекта",
+                    Status = "PENDING",
+                    Deadline = baseDate.AddMonths(3) 
+                },
+                new IzhsStage {
+                    StageNumber = 2,
+                    Name = "Ограждение территории и начало строительных работ",
+                    Status = "PENDING",
+                    Deadline = baseDate.AddMonths(6)
+                },
+                new IzhsStage {
+                    StageNumber = 3,
+                    Name = "Ежегодная фиксация степени освоения",
+                    Status = "PENDING",
+                    Deadline = new DateTime(DateTime.Now.Year, 10, 31)
+                }
+            };
+
+                    await _plots.InsertOneAsync(plot);
+        }
+
+        public async Task<bool> UpdateAsync(string id, IzhsLandPlot updatedPlot)
+        {
+            updatedPlot.ModifiedOn = DateTime.UtcNow;
+
+            var result = await _plots.ReplaceOneAsync(x => x.Id == id, updatedPlot);
+
+            return result.IsAcknowledged && result.ModifiedCount > 0;
+        }
+
+        public async Task<bool> ExcludeAsync(string id, string reason)
+        {
+            if (!MongoDB.Bson.ObjectId.TryParse(id, out _))
+            {
+                return false;
+            }
+
+            var update = Builders<IzhsLandPlot>.Update
+                .Set(x => x.OverallStatus, "EXCLUDED")    // Статус становится "Исключен"
+                .Set(x => x.ExcludedFromControl, true)   // Ставим метку, что контроль снят
+                .Set(x => x.ExclusionReason, reason)     // Сохраняем причину из ТЗ
+                .Set(x => x.ExclusionDate, DateTime.UtcNow) // Дата исключения
+                .Set(x => x.ModifiedOn, DateTime.UtcNow);   // Дата последнего изменения
+
+            var result = await _plots.UpdateOneAsync(x => x.Id == id, update);
+
+            return result.ModifiedCount > 0;
+        }
+
+
     }
 }
