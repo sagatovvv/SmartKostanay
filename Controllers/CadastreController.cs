@@ -31,6 +31,14 @@ namespace SmartKostanay.Controllers
             return Ok(new { totalCount, page, pageSize, items });
         }
 
+        // GET: api/v1/izhs/land-plots/map
+        [HttpGet("/api/v1/izhs/land-plots/map")]
+        public async Task<IActionResult> GetMapData([FromQuery] string? district, [FromQuery] string? status)
+        {
+            var result = await _cadastreService.GetMapDataAsync(district, status);
+            return Ok(result);
+        }
+
         // GET: api/v1/izhs/land-plots/{id} 
         [HttpGet("land-plots/{id}")]
         public async Task<IActionResult> GetById(string id)
@@ -122,7 +130,7 @@ namespace SmartKostanay.Controllers
 
             if (!success) return BadRequest(new { message = "Ошибка при обновлении в базе данных" });
 
-            return NoContent(); // Статус 204
+            return NoContent();
         }
 
         // 3. Исключение участка из контроля
@@ -143,6 +151,26 @@ namespace SmartKostanay.Controllers
 
             return Ok(new { message = "Участок успешно исключен из контроля" });
         }
+
+        // GET: api/v1/izhs/land-plots/export
+        [HttpGet("/api/v1/izhs/land-plots/export")]
+        public async Task<IActionResult> Export([FromQuery] string? district, [FromQuery] string? status)
+        {
+            var fileBytes = await _cadastreService.ExportToExcelAsync(district, status);
+
+            // Формируем имя файла с текущей датой
+            string dateStr = DateTime.Now.ToString("dd-MM-yyyy");
+            string fileName = $"Otchet_IZHS_{dateStr}.xlsx";
+
+            return File(
+                fileBytes,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                fileName
+            );
+        }
+
+
+
 
     }
     public class ExclusionRequest

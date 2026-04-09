@@ -1,5 +1,7 @@
 ﻿using MongoDB.Driver;
 using SmartKostanay.Models;
+using ClosedXML.Excel;
+using System.IO;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
@@ -123,6 +125,109 @@ namespace SmartKostanay.Services
             var result = await _plots.UpdateOneAsync(x => x.Id == id, update);
 
             return result.ModifiedCount > 0;
+        }
+
+
+
+        public async Task<object> GetMapDataAsync(string? district, string? status)
+        {
+            // Начинаем с базового фильтра (не исключенные из контроля)
+            var filterBuilder = Builders<IzhsLandPlot>.Filter;
+            var filter = filterBuilder.Eq(p => p.ExcludedFromControl, false);
+
+            // Добавляем фильтр по району, если он передан
+            if (!string.IsNullOrEmpty(district))
+            {
+                filter &= filterBuilder.Eq(p => p.District, district);
+            }
+
+            // Добавляем фильтр по статусу, если он передан
+            if (!string.IsNullOrEmpty(status))
+            {
+                filter &= filterBuilder.Eq(p => p.OverallStatus, status);
+            }
+
+            var plots = await _plots.Find(filter).ToListAsync();
+
+            return new
+            {
+                type = "FeatureCollection",
+                features = plots.Select(p => new
+                {
+                    type = "Feature",
+                    id = p.Id,
+                    geometry = new
+                    {
+                        type = "Point",
+                        coordinates = new double[] { p.Location.Coordinates.Values[0], p.Location.Coordinates.Values[1] }
+                    },
+                    properties = new
+                    {
+                        p.CadastralNumber,
+                        p.Address,
+                        p.OverallStatus, // Фронтенд по этому полю выберет цвет маркера
+                        p.Area,
+                        ownerName = p.Owner?.FullName
+                    }
+                })
+            };
+        }
+
+        public async Task<byte[]> ExportToExcelAsync(string? district, string? status)
+        {
+            var filterBuilder = Builders<IzhsLandPlot>.Filter;
+            var filter = filterBuilder.Empty;
+
+            if (!string.IsNullOrEmpty(district))
+            {
+                filter &= filterBuilder.Eq(p => p.District, district);
+            }
+
+            if (!string.IsNullOrEmpty(status))
+            {
+                filter &= filterBuilder.Eq(p => p.OverallStatus, status);
+            }
+
+            var plots = await _plots.Find(filter).ToListAsync();
+
+            using (var workbook = new XLWorkbook())
+            {
+                var worksheet = workbook.Worksheets.Add("Отчет по участкам");
+
+                var headers = new string[] { "№", "Кадастровый номер", "Адрес", "Район", "Площадь (га)", "Владелец", "Статус" };
+                for (int i = 0; i < headers.Length; i++)
+                {
+                    var cell = worksheet.Cell(1, i + 1);
+                    cell.Value = headers[i];
+                    cell.Style.Font.Bold = true;
+                    cell.Style.Fill.BackgroundColor = XLColor.LightGray;
+                    cell.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+                }
+
+                for (int i = 0; i < plots.Count; i++)
+                {
+                    var row = i + 2;
+                    var plot = plots[i];
+
+                    worksheet.Cell(row, 1).Value = i + 1;
+                    worksheet.Cell(row, 2).Value = plot.CadastralNumber;
+                    worksheet.Cell(row, 3).Value = plot.Address;
+                    worksheet.Cell(row, 4).Value = plot.District;
+                    worksheet.Cell(row, 5).Value = plot.Area;
+                    worksheet.Cell(row, 6).Value = plot.Owner?.FullName ?? "Нет данных";
+                    worksheet.Cell(row, 7).Value = plot.OverallStatus;
+
+                    worksheet.Range(row, 1, row, 7).Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+                }
+
+                worksheet.Columns().AdjustToContents();
+
+                using (var stream = new MemoryStream())
+                {
+                    workbook.SaveAs(stream);
+                    return stream.ToArray();
+                }
+            }
         }
 
 
