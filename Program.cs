@@ -1,5 +1,6 @@
 using MongoDB.Driver;
 using SmartKostanay.Services;
+using static SmartKostanay.Services.CadastreService;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -15,9 +16,21 @@ builder.Services.AddScoped<CadastreService>(sp =>
     return new CadastreService(client, dbName);
 });
 
+// Регистрация сервиса с автоматической поддержкой Cookies
+builder.Services.AddHttpClient<EgknIntegrationService>()
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+    {
+        UseCookies = true,
+        CookieContainer = new System.Net.CookieContainer(),
+        // Если гос. сервер капризничает с SSL, можно добавить:
+        // ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true 
+    });
+
 
 builder.Services.AddControllersWithViews();
 builder.Services.AddSingleton<CoordinateConverter>();
+builder.Services.AddHttpClient<EgknIntegrationService>();
+builder.Services.AddScoped<EgknIntegrationService>();
 
 var app = builder.Build();
 
@@ -32,6 +45,7 @@ app.UseStaticFiles();
 
 app.UseRouting();
 app.UseAuthorization();
+
 
 app.MapControllerRoute(
     name: "default",

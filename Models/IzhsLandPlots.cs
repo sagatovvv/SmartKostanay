@@ -59,6 +59,12 @@ namespace SmartKostanay.Models
 
         [BsonElement("ModifiedOn")]
         public DateTime ModifiedOn { get; set; }
+
+        [BsonElement("createdAt")]
+        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+
+        [BsonElement("updatedAt")]
+        public DateTime? UpdatedAt { get; set; }
     }
 
     public class OwnerDetails
