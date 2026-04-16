@@ -1,14 +1,13 @@
-﻿using MongoDB.Driver;
+﻿using ClosedXML.Excel;
 using MongoDB.Bson;
-using MongoDB.Bson.Serialization.Attributes;
+using MongoDB.Driver;
+using MongoDB.Driver.GeoJsonObjectModel;
 using SmartKostanay.Models;
-using ClosedXML.Excel;
-using System.IO;
+using System;
 using System.Collections.Generic;
-using System.Threading.Tasks;
-using System.Globalization;
-using System.Text.RegularExpressions;
+using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 
 namespace SmartKostanay.Services
 {
@@ -16,12 +15,16 @@ namespace SmartKostanay.Services
     {
         private readonly IMongoCollection<IzhsLandPlot> _plots;
         private readonly IMongoCollection<LandDocument> _documents;
+        private readonly IMongoCollection<IzhsPhoto> _photos;
+        private readonly IMongoCollection<IzhsAuditLog> _auditLogs;
 
         public CadastreService(IMongoClient client, string databaseName)
         {
             var database = client.GetDatabase(databaseName);
             _plots = database.GetCollection<IzhsLandPlot>("IzhsLandPlots");
             _documents = database.GetCollection<LandDocument>("IzhsDocuments");
+            _photos = database.GetCollection<IzhsPhoto>("IzhsPhotos");
+            _auditLogs = database.GetCollection<IzhsAuditLog>("IzhsAuditLog");
         }
 
         #region Методы для Участков (IzhsLandPlots)
@@ -34,12 +37,12 @@ namespace SmartKostanay.Services
         public async Task<IzhsLandPlot?> GetByIdAsync(string id)
         {
             if (!ObjectId.TryParse(id, out _)) return null;
-
             return await _plots.Find(x => x.Id == id).FirstOrDefaultAsync();
         }
 
+        // Обновленный фильтр с поиском по ИИН и Телефону
         public async Task<(List<IzhsLandPlot> Items, long TotalCount)> GetFilteredAsync(
-            string district, string status, int? stage, int page, int pageSize)
+            string? district, string? status, int? stage, string? searchTerm, int page, int pageSize)
         {
             var builder = Builders<IzhsLandPlot>.Filter;
             var filter = builder.Empty;
@@ -52,6 +55,17 @@ namespace SmartKostanay.Services
 
             if (stage.HasValue)
                 filter &= builder.Eq(x => x.CurrentStage, stage.Value);
+
+            // Поиск по ключевому слову
+            if (!string.IsNullOrEmpty(searchTerm))
+            {
+                var searchFilter = builder.Or(
+                    builder.Regex(x => x.CadastralNumber, new BsonRegularExpression(searchTerm, "i")),
+                    builder.Regex(x => x.Owner.IdentityNumber, new BsonRegularExpression(searchTerm, "i")),
+                    builder.Regex(x => x.Owner.PhoneNumber, new BsonRegularExpression(searchTerm, "i"))
+                );
+                filter &= searchFilter;
+            }
 
             var totalCount = await _plots.CountDocumentsAsync(filter);
             int skip = (page - 1) * pageSize;
@@ -106,28 +120,24 @@ namespace SmartKostanay.Services
 
         #endregion
 
-        #region Методы для Документов (IzhsDocuments)
+        #region Методы для Документов (IzhsDocuments) — ВЕРНУЛ НА МЕСТО
 
-        // POST: Сохранение информации о документе
         public async Task SaveDocumentAsync(LandDocument document)
         {
             await _documents.InsertOneAsync(document);
         }
 
-        // GET: Получение списка документов конкретного участка
         public async Task<List<LandDocument>> GetDocumentsByPlotIdAsync(string plotId)
         {
             return await _documents.Find(d => d.LandPlotId == plotId).ToListAsync();
         }
 
-        // GET: Получение инфы об одном документе (для скачивания)
         public async Task<LandDocument?> GetDocumentByIdAsync(string docId)
         {
             if (!ObjectId.TryParse(docId, out _)) return null;
             return await _documents.Find(d => d.Id == docId).FirstOrDefaultAsync();
         }
 
-        // DELETE: Удаление документа из базы
         public async Task<bool> DeleteDocumentAsync(string docId)
         {
             if (!ObjectId.TryParse(docId, out _)) return false;
@@ -167,7 +177,7 @@ namespace SmartKostanay.Services
                         p.Address,
                         p.OverallStatus,
                         p.Area,
-                        ownerName = p.Owner?.FullName
+                        ownerName = p.Owner != null ? $"{p.Owner.Lastname} {p.Owner.Firstname}" : "Нет данных"
                     }
                 })
             };
@@ -186,7 +196,7 @@ namespace SmartKostanay.Services
             using (var workbook = new XLWorkbook())
             {
                 var worksheet = workbook.Worksheets.Add("Отчет по участкам");
-                var headers = new string[] { "№", "Кадастровый номер", "Адрес", "Район", "Площадь (га)", "Владелец", "Статус" };
+                var headers = new string[] { "№", "Кадастровый номер", "Адрес", "Район", "Площадь (га)", "Владелец", "ИИН", "Телефон", "Статус" };
 
                 for (int i = 0; i < headers.Length; i++)
                 {
@@ -205,8 +215,10 @@ namespace SmartKostanay.Services
                     worksheet.Cell(row, 3).Value = plot.Address;
                     worksheet.Cell(row, 4).Value = plot.District;
                     worksheet.Cell(row, 5).Value = plot.Area;
-                    worksheet.Cell(row, 6).Value = plot.Owner?.FullName ?? "Нет данных";
-                    worksheet.Cell(row, 7).Value = plot.OverallStatus;
+                    worksheet.Cell(row, 6).Value = plot.Owner != null ? $"{plot.Owner.Lastname} {plot.Owner.Firstname} {plot.Owner.Patronymic}" : "Нет данных";
+                    worksheet.Cell(row, 7).Value = plot.Owner?.IdentityNumber ?? "-";
+                    worksheet.Cell(row, 8).Value = plot.Owner?.PhoneNumber ?? "-";
+                    worksheet.Cell(row, 9).Value = plot.OverallStatus;
                 }
 
                 worksheet.Columns().AdjustToContents();
@@ -218,8 +230,58 @@ namespace SmartKostanay.Services
                 }
             }
         }
+        #endregion
+
+        #region ФОТО
+        public async Task<IzhsPhoto?> GetPhotoByIdAsync(string photoId)
+        {
+            if (!ObjectId.TryParse(photoId, out _)) return null;
+            return await _photos.Find(p => p.Id == photoId).FirstOrDefaultAsync();
+        }
+
+        public async Task<List<IzhsPhoto>> GetPhotosByPlotIdAsync(string plotId)
+        {
+            return await _photos.Find(p => p.LandPlotId == plotId).ToListAsync();
+        }
+
+        public async Task SavePhotoAsync(IzhsPhoto photo)
+        {
+            await _photos.InsertOneAsync(photo);
+        }
+
+        public async Task<bool> DeletePhotoAsync(string photoId)
+        {
+            var result = await _photos.DeleteOneAsync(p => p.Id == photoId);
+            return result.DeletedCount > 0;
+        }
+
+        public async Task<bool> IsPointInPlotBoundary(string plotId, double lon, double lat)
+        {
+            var plot = await GetByIdAsync(plotId);
+            if (plot?.Boundary == null) return false;
+
+            var point = GeoJson.Point(GeoJson.Geographic(lon, lat));
+            var filter = Builders<IzhsLandPlot>.Filter.And(
+                Builders<IzhsLandPlot>.Filter.Eq(x => x.Id, plotId),
+                Builders<IzhsLandPlot>.Filter.GeoWithin(x => x.Boundary, point)
+            );
+
+            return await _plots.Find(filter).AnyAsync();
+        }
 
         #endregion
-    }
 
+        public async Task<List<IzhsAuditLog>> GetAuditLogByPlotIdAsync(string landPlotId)
+        {
+            var filter = Builders<IzhsAuditLog>.Filter.And(
+                Builders<IzhsAuditLog>.Filter.Eq(x => x.EntityId, landPlotId),
+                Builders<IzhsAuditLog>.Filter.Eq(x => x.EntityType, "LAND_PLOT")
+            );
+
+            return await _auditLogs
+                .Find(filter)
+                .SortByDescending(x => x.Timestamp)
+                .ToListAsync();
+        }
+    }
 }

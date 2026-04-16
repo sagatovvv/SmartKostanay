@@ -2,7 +2,11 @@
 {
     public class OwnerDto
     {
-        public string FullName { get; set; }
-        public string IdentityNumber { get; set; } // ИИН
+        public string Lastname { get; set; } = string.Empty;
+        public string Firstname { get; set; } = string.Empty;
+        public string? Patronymic { get; set; } 
+
+        public string IdentityNumber { get; set; } = string.Empty; 
+        public string? PhoneNumber { get; set; } 
     }
 }

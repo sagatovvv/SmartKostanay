@@ -59,12 +59,6 @@ namespace SmartKostanay.Models
 
         [BsonElement("ModifiedOn")]
         public DateTime ModifiedOn { get; set; }
-
-        [BsonElement("createdAt")]
-        public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-
-        [BsonElement("updatedAt")]
-        public DateTime? UpdatedAt { get; set; }
     }
 
     public class OwnerDetails
@@ -73,14 +67,25 @@ namespace SmartKostanay.Models
         [BsonRepresentation(BsonType.ObjectId)]
         public string ID { get; set; }
 
-        [BsonElement("FullName")]
-        public string FullName { get; set; }
+        // Исправлено: в структуре JSON поля разделены на Lastname, Firstname, Patronymic
+        [BsonElement("Lastname")]
+        public string Lastname { get; set; }
+
+        [BsonElement("Firstname")]
+        public string Firstname { get; set; }
+
+        [BsonElement("Patronymic")]
+        public string Patronymic { get; set; }
 
         [BsonElement("IdentityNumber")]
         public string IdentityNumber { get; set; }
+
+        [BsonElement("PhoneNumber")]
+        public string PhoneNumber { get; set; }
     }
 
-    public class StageDetails
+    // Переименовано в IzhsStage для соответствия списку в основной модели
+    public class IzhsStage
     {
         [BsonElement("StageNumber")]
         public int StageNumber { get; set; }
@@ -89,7 +94,7 @@ namespace SmartKostanay.Models
         public string Name { get; set; }
 
         [BsonElement("Status")]
-        public string Status { get; set; } // "PENDING" | "IN_PROGRESS" | "COMPLETED" | "OVERDUE"
+        public string Status { get; set; }
 
         [BsonElement("Deadline")]
         public DateTime? Deadline { get; set; }
@@ -99,10 +104,10 @@ namespace SmartKostanay.Models
 
         [BsonElement("Documents")]
         [BsonRepresentation(BsonType.ObjectId)]
-        public List<string> Documents { get; set; }
+        public List<string> Documents { get; set; } = new List<string>();
 
         [BsonElement("Photos")]
         [BsonRepresentation(BsonType.ObjectId)]
-        public List<string> Photos { get; set; }
+        public List<string> Photos { get; set; } = new List<string>();
     }
 }

@@ -3,12 +3,16 @@ using MongoDB.Driver.GeoJsonObjectModel;
 using SmartKostanay.Models;
 using SmartKostanay.Models.DTOs;
 using SmartKostanay.Services;
+using MetadataExtractor;
+using MetadataExtractor.Formats.Exif;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.IO;
 using System;
 using Microsoft.AspNetCore.Http;
 using System.Linq;
+
+using IoDirectory = System.IO.Directory;
 
 namespace SmartKostanay.Controllers
 {
@@ -32,14 +36,15 @@ namespace SmartKostanay.Controllers
             [FromQuery] string? district = null,
             [FromQuery] string? status = null,
             [FromQuery] int? stage = null,
+            [FromQuery] string? searchTerm = null,
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 10)
         {
-            var (items, totalCount) = await _cadastreService.GetFilteredAsync(district, status, stage, page, pageSize);
+            var (items, totalCount) = await _cadastreService.GetFilteredAsync(district, status, stage, searchTerm, page, pageSize);
             return Ok(new { totalCount, page, pageSize, items });
         }
 
-        [HttpGet("/api/v1/izhs/land-plots/map")]
+        [HttpGet("land-plots/map")]
         public async Task<IActionResult> GetMapData([FromQuery] string? district, [FromQuery] string? status)
         {
             var result = await _cadastreService.GetMapDataAsync(district, status);
@@ -50,9 +55,7 @@ namespace SmartKostanay.Controllers
         public async Task<IActionResult> GetById(string id)
         {
             var plot = await _cadastreService.GetByIdAsync(id);
-            if (plot == null)
-                return NotFound(new { message = "Участок не найден" });
-
+            if (plot == null) return NotFound(new { message = "Участок не найден" });
             return Ok(plot);
         }
 
@@ -60,9 +63,7 @@ namespace SmartKostanay.Controllers
         public async Task<IActionResult> GetByCadaster(string cadNumber)
         {
             var item = await _cadastreService.GetByCadNumberAsync(cadNumber);
-            if (item == null)
-                return NotFound(new { message = "Участок не найден по кадастровому номеру" });
-
+            if (item == null) return NotFound(new { message = "Участок не найден по кадастровому номеру" });
             return Ok(item);
         }
 
@@ -80,12 +81,29 @@ namespace SmartKostanay.Controllers
                 IssueDate = dto.IssueDate,
                 Owner = new OwnerDetails
                 {
-                    FullName = dto.Owner.FullName,
-                    IdentityNumber = dto.Owner.IdentityNumber
+                    Lastname = dto.Owner.Lastname,
+                    Firstname = dto.Owner.Firstname,
+                    Patronymic = dto.Owner.Patronymic,
+                    IdentityNumber = dto.Owner.IdentityNumber,
+                    PhoneNumber = dto.Owner.PhoneNumber
                 },
                 Location = new GeoJsonPoint<GeoJson2DGeographicCoordinates>(
                     new GeoJson2DGeographicCoordinates(dto.Location.Coordinates[0], dto.Location.Coordinates[1]))
             };
+
+            if (dto.Boundary != null && dto.Boundary.Any())
+            {
+                var points = dto.Boundary
+                    .Select(c => new GeoJson2DGeographicCoordinates(c[0], c[1]))
+                    .ToList();
+
+                if (points.First().Values[0] != points.Last().Values[0] || points.First().Values[1] != points.Last().Values[1])
+                    points.Add(points.First());
+
+                var linearRing = new GeoJsonLinearRingCoordinates<GeoJson2DGeographicCoordinates>(points);
+                var polygonCoordinates = new GeoJsonPolygonCoordinates<GeoJson2DGeographicCoordinates>(linearRing);
+                plot.Boundary = new GeoJsonPolygon<GeoJson2DGeographicCoordinates>(polygonCoordinates);
+            }
 
             await _cadastreService.CreateAsync(plot);
             return CreatedAtAction(nameof(GetById), new { id = plot.Id }, plot);
@@ -107,7 +125,6 @@ namespace SmartKostanay.Controllers
 
         #region Документы (Documents)
 
-        // POST: api/v1/izhs/land-plots/{id}/documents
         [HttpPost("land-plots/{id}/documents")]
         public async Task<IActionResult> UploadDocument(
             string id,
@@ -121,9 +138,8 @@ namespace SmartKostanay.Controllers
             var plot = await _cadastreService.GetByIdAsync(id);
             if (plot == null) return NotFound("Участок не найден");
 
-            // Путь: wwwroot/uploads/documents
-            var uploadsPath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", "uploads", "documents");
-            if (!Directory.Exists(uploadsPath)) Directory.CreateDirectory(uploadsPath);
+            var uploadsPath = Path.Combine(IoDirectory.GetCurrentDirectory(), "wwwroot", "uploads", "documents");
+            if (!IoDirectory.Exists(uploadsPath)) IoDirectory.CreateDirectory(uploadsPath);
 
             var uniqueFileName = $"{Guid.NewGuid()}_{file.FileName}";
             var filePath = Path.Combine(uploadsPath, uniqueFileName);
@@ -143,7 +159,7 @@ namespace SmartKostanay.Controllers
                 FileSize = file.Length,
                 Comment = comment,
                 UploadSource = "MOBILE",
-                UploadedBy = "65f1a5f9e4b0c1234567890a", // В реале берем из User.Identity
+                UploadedBy = "Система",
                 DateOfCreation = DateTime.UtcNow
             };
 
@@ -151,52 +167,29 @@ namespace SmartKostanay.Controllers
             return Ok(document);
         }
 
-        // GET: api/v1/izhs/documents/{docId}/download
         [HttpGet("documents/{docId}/download")]
         public async Task<IActionResult> DownloadDocument(string docId)
         {
-            // 1. Ищем инфу о файле в базе
             var doc = await _cadastreService.GetDocumentByIdAsync(docId);
-            if (doc == null) return NotFound("Документ не найден в базе данных");
+            if (doc == null) return NotFound("Документ не найден");
 
-            // 2. Формируем полный путь к файлу на сервере
-            var filePath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", doc.FileUrl.TrimStart('/'));
+            var filePath = Path.Combine(IoDirectory.GetCurrentDirectory(), "wwwroot", doc.FileUrl.TrimStart('/'));
+            if (!System.IO.File.Exists(filePath)) return NotFound("Файл отсутствует");
 
-            if (!System.IO.File.Exists(filePath))
-                return NotFound("Файл физически отсутствует на сервере");
-
-            // 3. Определяем MIME-тип (pdf, png и т.д.)
             var provider = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
-            if (!provider.TryGetContentType(filePath, out var contentType))
-            {
-                contentType = "application/octet-stream"; // Если тип неизвестен, отдаем как поток байтов
-            }
+            if (!provider.TryGetContentType(filePath, out var contentType)) contentType = "application/octet-stream";
 
-            // 4. Отдаем файл пользователю
             var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
-
-            // Этот метод заставит браузер открыть окно сохранения с оригинальным именем файла
             return File(fileBytes, contentType, doc.FileName);
         }
 
-
-        // GET: api/v1/izhs/land-plots/{id}/documents
-        [HttpGet("land-plots/{id}/documents")]
-        public async Task<IActionResult> GetDocuments(string id)
-        {
-            var docs = await _cadastreService.GetDocumentsByPlotIdAsync(id);
-            return Ok(docs);
-        }
-
-        // DELETE: api/v1/izhs/documents/{docId}
         [HttpDelete("documents/{docId}")]
         public async Task<IActionResult> DeleteDocument(string docId)
         {
             var doc = await _cadastreService.GetDocumentByIdAsync(docId);
             if (doc == null) return NotFound("Документ не найден");
 
-            // Удаляем файл физически
-            var filePath = Path.Combine(Directory.GetCurrentDirectory(), "wwwroot", doc.FileUrl.TrimStart('/'));
+            var filePath = Path.Combine(IoDirectory.GetCurrentDirectory(), "wwwroot", doc.FileUrl.TrimStart('/'));
             if (System.IO.File.Exists(filePath)) System.IO.File.Delete(filePath);
 
             await _cadastreService.DeleteDocumentAsync(docId);
@@ -207,7 +200,7 @@ namespace SmartKostanay.Controllers
 
         #region Экспорт и Синхронизация
 
-        [HttpGet("/api/v1/izhs/land-plots/export")]
+        [HttpGet("land-plots/export")]
         public async Task<IActionResult> Export([FromQuery] string? district, [FromQuery] string? status)
         {
             var fileBytes = await _cadastreService.ExportToExcelAsync(district, status);
@@ -218,58 +211,178 @@ namespace SmartKostanay.Controllers
         [HttpPost("sync-egkn")]
         public async Task<IActionResult> SyncWithEgkn([FromQuery] string kadNumber)
         {
-            if (string.IsNullOrEmpty(kadNumber))
-            {
-                return BadRequest(new { message = "Кадастровый номер не указан" });
-            }
+            if (string.IsNullOrEmpty(kadNumber)) return BadRequest(new { message = "Кадастровый номер не указан" });
 
             try
             {
-                // 1. Используем наш новый ScraperService для получения полигона (lat/lon)
-                // ВНИМАНИЕ: Измени тип переменной в конструкторе контроллера на EgknScraperService
                 var coordsList = await _egknService.GetActualCoordinatesAsync(kadNumber);
+                if (coordsList == null || !coordsList.Any()) return NotFound("Геометрия не найдена");
 
-                if (coordsList == null || !coordsList.Any())
-                {
-                    return NotFound(new { message = "Не удалось получить геометрию участка из ЕГКН" });
-                }
-
-                // 2. Берем первую точку как центральную метку для карты (Point)
                 var center = coordsList.First();
+                var polygonPoints = coordsList.Select(c => new GeoJson2DGeographicCoordinates(c.lon, c.lat)).ToList();
 
-                // 3. Создаем модель для нашей MongoDB
+                if (polygonPoints.First().Values[0] != polygonPoints.Last().Values[0] || polygonPoints.First().Values[1] != polygonPoints.Last().Values[1])
+                    polygonPoints.Add(polygonPoints.First());
+
+                var linearRing = new GeoJsonLinearRingCoordinates<GeoJson2DGeographicCoordinates>(polygonPoints);
+                var polygonCoordinates = new GeoJsonPolygonCoordinates<GeoJson2DGeographicCoordinates>(linearRing);
+                var polygon = new GeoJsonPolygon<GeoJson2DGeographicCoordinates>(polygonCoordinates);
+
                 var newPlot = new IzhsLandPlot
                 {
                     CadastralNumber = kadNumber,
-                    // Так как скрапер берет только геометрию, адрес можно оставить пустым 
-                    // или добавить метод для парсинга адреса из того же JSON
-                    Address = "Получено из ЕГКН",
-                    OverallStatus = "IN_PROGRESS",
+                    Address = "Синхронизировано из ЕГКН",
+                    OverallStatus = "ACTIVE",
                     DateOfCreation = DateTime.UtcNow,
-
-                    // Сохраняем точку центра
+                    ModifiedOn = DateTime.UtcNow,
                     Location = new GeoJsonPoint<GeoJson2DGeographicCoordinates>(
-                        new GeoJson2DGeographicCoordinates(center.lon, center.lat)
-                    ),
-
-                    // Если у тебя в модели есть поле для хранения всего полигона (границ):
-                    // Boundaries = coordsList.Select(c => new double[] { c.lon, c.lat }).ToList()
+                        new GeoJson2DGeographicCoordinates(center.lon, center.lat)),
+                    Boundary = polygon
                 };
 
-                // 4. Сохраняем в базу через твой CadastreService
                 await _cadastreService.CreateAsync(newPlot);
-
-                return Ok(new
-                {
-                    message = "Участок успешно синхронизирован",
-                    center = new { lat = center.lat, lon = center.lon },
-                    pointsCount = coordsList.Count
-                });
+                return Ok(new { message = "Синхронизация успешна", id = newPlot.Id });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { message = "Ошибка при синхронизации", details = ex.Message });
+                return StatusCode(500, new { message = "Ошибка", details = ex.Message });
             }
+        }
+
+        #endregion
+
+        #region ФОТО
+
+        [HttpPost("land-plots/{id}/photos")]
+        public async Task<IActionResult> UploadPhoto(
+            string id,
+            [FromForm] IFormFile file,
+            [FromForm] int stageNumber,
+            [FromForm] string? comment)
+        {
+            if (file == null || file.Length == 0) return BadRequest("Файл не выбран");
+
+            var extension = Path.GetExtension(file.FileName).ToLower();
+            if (extension != ".jpg" && extension != ".jpeg" && extension != ".heic")
+                return BadRequest("Допустимы только форматы JPEG и HEIC");
+
+            var plot = await _cadastreService.GetByIdAsync(id);
+            if (plot == null) return NotFound("Участок не найден");
+
+            var fileName = $"{Guid.NewGuid()}{extension}";
+            var folderPath = Path.Combine(IoDirectory.GetCurrentDirectory(), "wwwroot/uploads/photos");
+            if (!IoDirectory.Exists(folderPath)) IoDirectory.CreateDirectory(folderPath);
+            var filePath = Path.Combine(folderPath, fileName);
+
+            using (var stream = new FileStream(filePath, FileMode.Create))
+            {
+                await file.CopyToAsync(stream);
+            }
+
+            var photo = new IzhsPhoto
+            {
+                LandPlotId = id,
+                StageNumber = stageNumber,
+                FileUrl = $"/uploads/photos/{fileName}",
+                OriginalFileName = file.FileName,
+                FileSize = file.Length,
+                Comment = comment,
+                DateOfCreation = DateTime.UtcNow
+            };
+
+            try
+            {
+                var directories = MetadataExtractor.ImageMetadataReader.ReadMetadata(filePath);
+                var subIfd = directories.OfType<ExifSubIfdDirectory>().FirstOrDefault();
+                var gps = directories.OfType<GpsDirectory>().FirstOrDefault();
+
+                if (subIfd != null)
+                {
+                    var dateTag = subIfd.GetDescription(ExifDirectoryBase.TagDateTimeOriginal);
+                    photo.Metadata.CapturedAt = dateTag != null
+                        ? DateTime.ParseExact(dateTag, "yyyy:MM:dd HH:mm:ss", null)
+                        : (DateTime?)null;
+                    photo.Metadata.HasExif = true;
+                }
+
+                if (gps != null)
+                {
+                    var loc = gps.GetGeoLocation();
+                    if (loc is GeoLocation geoLoc)
+                    {
+                        photo.Metadata.GeoLocation = new GeoJsonPoint<GeoJson2DGeographicCoordinates>(
+                            new GeoJson2DGeographicCoordinates(geoLoc.Longitude, geoLoc.Latitude));
+                    }
+                }
+            }
+            catch
+            {
+                photo.Metadata.HasExif = false;
+            }
+
+            photo.Validation.IsGeoPresent = photo.Metadata.GeoLocation != null;
+            photo.Validation.IsDatePresent = photo.Metadata.CapturedAt.HasValue;
+
+            if (photo.Validation.IsGeoPresent)
+            {
+                var currentLon = photo.Metadata.GeoLocation.Coordinates.Values[0];
+                var currentLat = photo.Metadata.GeoLocation.Coordinates.Values[1];
+                photo.Validation.IsWithinBoundary = await _cadastreService.IsPointInPlotBoundary(id, currentLon, currentLat);
+            }
+
+            if (photo.Validation.IsDatePresent)
+            {
+                photo.Validation.TimeDriftSeconds = (int)Math.Abs((DateTime.UtcNow - photo.Metadata.CapturedAt.Value).TotalSeconds);
+                photo.Validation.IsTimeDriftAcceptable = photo.Validation.TimeDriftSeconds <= (72 * 3600);
+            }
+
+            photo.Validation.IsValid = photo.Validation.IsGeoPresent &&
+                                        photo.Validation.IsWithinBoundary &&
+                                        photo.Validation.IsDatePresent &&
+                                        photo.Validation.IsTimeDriftAcceptable;
+
+            await _cadastreService.SavePhotoAsync(photo);
+            return Ok(photo);
+        }
+
+        [HttpGet("land-plots/{id}/photos")]
+        public async Task<IActionResult> GetPhotos(string id)
+        {
+            return Ok(await _cadastreService.GetPhotosByPlotIdAsync(id));
+        }
+
+        [HttpGet("photos/{photoId}")]
+        public async Task<IActionResult> GetPhotoDetails(string photoId)
+        {
+            var photo = await _cadastreService.GetPhotoByIdAsync(photoId);
+            return photo == null ? NotFound() : Ok(photo);
+        }
+
+        [HttpDelete("photos/{photoId}")]
+        public async Task<IActionResult> DeletePhoto(string photoId)
+        {
+            var photo = await _cadastreService.GetPhotoByIdAsync(photoId);
+            if (photo != null)
+            {
+                var fullPath = Path.Combine(IoDirectory.GetCurrentDirectory(), "wwwroot", photo.FileUrl.TrimStart('/'));
+                if (System.IO.File.Exists(fullPath)) System.IO.File.Delete(fullPath);
+                await _cadastreService.DeletePhotoAsync(photoId);
+            }
+            return Ok(new { message = "Удалено" });
+        }
+
+        #endregion
+
+        #region Журнал действий (Audit Log)
+
+        [HttpGet("land-plots/{id}/audit-log")]
+        public async Task<IActionResult> GetAuditLog(string id)
+        {
+            var plot = await _cadastreService.GetByIdAsync(id);
+            if (plot == null) return NotFound(new { message = "Участок не найден" });
+
+            var logs = await _cadastreService.GetAuditLogByPlotIdAsync(id);
+            return Ok(logs);
         }
 
         #endregion
