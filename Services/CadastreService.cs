@@ -8,14 +8,14 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Globalization;
 using System.Text.RegularExpressions;
-using System.Linq; // Добавлен для Select/FirstOrDefault
+using System.Linq;
 
 namespace SmartKostanay.Services
 {
     public class CadastreService
     {
         private readonly IMongoCollection<IzhsLandPlot> _plots;
-        private readonly IMongoCollection<LandDocument> _documents; // Новая коллекция для документов
+        private readonly IMongoCollection<LandDocument> _documents;
 
         public CadastreService(IMongoClient client, string databaseName)
         {

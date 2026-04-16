@@ -1,13 +1,14 @@
 using MongoDB.Driver;
 using SmartKostanay.Services;
-using static SmartKostanay.Services.CadastreService;
+using SmartKostanay.Helpers;
+using System.Net;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// 1. Настройка MongoDB
 var mongoConnectionString = builder.Configuration.GetConnectionString("MongoDb");
 var dbName = builder.Configuration.GetSection("DatabaseSettings:DatabaseName").Value;
 
-// 2. Регистрируем IMongoClient как Singleton (один на всё приложение)
 builder.Services.AddSingleton<IMongoClient>(new MongoClient(mongoConnectionString));
 
 builder.Services.AddScoped<CadastreService>(sp =>
@@ -16,21 +17,23 @@ builder.Services.AddScoped<CadastreService>(sp =>
     return new CadastreService(client, dbName);
 });
 
-// Регистрация сервиса с автоматической поддержкой Cookies
-builder.Services.AddHttpClient<EgknIntegrationService>()
+// 2. Регистрация EgknScraperService с поддержкой COOKIES и GZIP
+builder.Services.AddHttpClient<EgknScraperService>()
     .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
     {
         UseCookies = true,
-        CookieContainer = new System.Net.CookieContainer(),
-        // Если гос. сервер капризничает с SSL, можно добавить:
-        // ServerCertificateCustomValidationCallback = (message, cert, chain, errors) => true 
+        CookieContainer = new CookieContainer(),
+        // Критически важно для получения данных (распаковка ответа сервера)
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+        ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator
     });
 
+// 3. Регистрация EgknIntegrationService
+builder.Services.AddHttpClient<EgknIntegrationService>();
 
+// 4. Остальные сервисы
 builder.Services.AddControllersWithViews();
 builder.Services.AddSingleton<CoordinateConverter>();
-builder.Services.AddHttpClient<EgknIntegrationService>();
-builder.Services.AddScoped<EgknIntegrationService>();
 
 var app = builder.Build();
 
@@ -42,10 +45,8 @@ if (!app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 app.UseStaticFiles();
-
 app.UseRouting();
 app.UseAuthorization();
-
 
 app.MapControllerRoute(
     name: "default",

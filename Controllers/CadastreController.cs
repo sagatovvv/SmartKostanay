@@ -17,9 +17,9 @@ namespace SmartKostanay.Controllers
     public class CadastreController : ControllerBase
     {
         private readonly CadastreService _cadastreService;
-        private readonly EgknIntegrationService _egknService;
+        private readonly EgknScraperService _egknService;
 
-        public CadastreController(CadastreService cadastreService, EgknIntegrationService egknService)
+        public CadastreController(CadastreService cadastreService, EgknScraperService egknService)
         {
             _cadastreService = cadastreService;
             _egknService = egknService;
@@ -225,39 +225,45 @@ namespace SmartKostanay.Controllers
 
             try
             {
-                // 1. Запрашиваем данные из ЕГКН
-                var egknData = await _egknService.GetLandByCadastre(kadNumber);
+                // 1. Используем наш новый ScraperService для получения полигона (lat/lon)
+                // ВНИМАНИЕ: Измени тип переменной в конструкторе контроллера на EgknScraperService
+                var coordsList = await _egknService.GetActualCoordinatesAsync(kadNumber);
 
-                if (egknData == null)
+                if (coordsList == null || !coordsList.Any())
                 {
-                    return NotFound(new { message = "Участок с таким номером не найден в базе ЕГКН" });
+                    return NotFound(new { message = "Не удалось получить геометрию участка из ЕГКН" });
                 }
 
-                // 2. Парсим геометрию (используем .Geometry, как в твоем исходнике)
-                var coords = _egknService.GetCenterCoordinates(egknData.Geometry);
+                // 2. Берем первую точку как центральную метку для карты (Point)
+                var center = coordsList.First();
 
                 // 3. Создаем модель для нашей MongoDB
                 var newPlot = new IzhsLandPlot
                 {
-                    CadastralNumber = egknData.Properties.CadastralNumber,
-                    Address = egknData.Properties.Address,
-                    Area = egknData.Properties.Area,
-                    District = egknData.Properties.DistrictId.ToString(),
+                    CadastralNumber = kadNumber,
+                    // Так как скрапер берет только геометрию, адрес можно оставить пустым 
+                    // или добавить метод для парсинга адреса из того же JSON
+                    Address = "Получено из ЕГКН",
                     OverallStatus = "IN_PROGRESS",
                     DateOfCreation = DateTime.UtcNow,
 
+                    // Сохраняем точку центра
                     Location = new GeoJsonPoint<GeoJson2DGeographicCoordinates>(
-                        new GeoJson2DGeographicCoordinates(coords.lon, coords.lat)
-                    )
+                        new GeoJson2DGeographicCoordinates(center.lon, center.lat)
+                    ),
+
+                    // Если у тебя в модели есть поле для хранения всего полигона (границ):
+                    // Boundaries = coordsList.Select(c => new double[] { c.lon, c.lat }).ToList()
                 };
 
-                // 4. Сохраняем в базу
+                // 4. Сохраняем в базу через твой CadastreService
                 await _cadastreService.CreateAsync(newPlot);
 
                 return Ok(new
                 {
-                    message = "Участок успешно синхронизирован и добавлен",
-                    plot = newPlot
+                    message = "Участок успешно синхронизирован",
+                    center = new { lat = center.lat, lon = center.lon },
+                    pointsCount = coordsList.Count
                 });
             }
             catch (Exception ex)

@@ -1,118 +1,112 @@
-﻿using System.Globalization;
-using System.Net.Http.Json;
-using System.Text.Json.Serialization;
-using System.Text.RegularExpressions;
-using DotSpatial.Projections;
+﻿using System;
+using System.Collections.Generic;
+using System.Net.Http;
+using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
+using ProjNet.CoordinateSystems;
+using ProjNet.CoordinateSystems.Transformations;
+using SmartKostanay.Models;
+using System.Linq;
 
 namespace SmartKostanay.Services
 {
     public class EgknIntegrationService
     {
         private readonly HttpClient _httpClient;
+        private const string BaseUrl = "https://map.gov4c.kz/egkn/rest/map";
 
         public EgknIntegrationService(HttpClient httpClient)
         {
             _httpClient = httpClient;
-
-            var baseUri = new Uri("https://map.gov4c.kz");
-
-            _httpClient.DefaultRequestHeaders.Clear();
-            _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36");
-            _httpClient.DefaultRequestHeaders.Add("Accept", "*/*");
+            // Имитируем браузер, как в твоем HEADERS
+            _httpClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+            _httpClient.DefaultRequestHeaders.Add("Accept", "application/json, text/plain, */*");
             _httpClient.DefaultRequestHeaders.Add("Referer", "https://map.gov4c.kz/egkn/");
-            _httpClient.DefaultRequestHeaders.Add("Sec-Fetch-Site", "same-origin");
-            _httpClient.DefaultRequestHeaders.Add("Sec-Fetch-Mode", "cors");
-            _httpClient.DefaultRequestHeaders.Add("Sec-Fetch-Dest", "empty");
-
-            var cookieHandler = new HttpClientHandler();
-            cookieHandler.CookieContainer.Add(baseUri, new System.Net.Cookie("MAP_SESSION_ID", "8mwBLd9mXCg7TWIzVxR5tQm4bZTyMkC3blw_VWTD"));
-            cookieHandler.CookieContainer.Add(baseUri, new System.Net.Cookie("JSESSIONID", "N23bdgcDklscFibwOdTO7ZeYZH_WrVxwRjkY3D_T"));
         }
 
-        public async Task<EgknLandItem?> GetLandByCadastre(string kadNumber)
+        public async Task<List<(double lat, double lon)>> GetCoordinatesAsync(string cadastralNumber)
         {
-            // Используем номер как есть (на сайте он часто идет без двоеточий в запросе)
-            var url = $"https://map.gov4c.kz/egkn/rest/map/search?searchText={kadNumber}&offset=0&limit=10&lang=ru&layers=";
+            // Шаг 1: Поиск объекта
+            var searchUrl = $"{BaseUrl}/search?searchText={cadastralNumber}&offset=0&limit=10&lang=ru&layers=";
+            var searchResponse = await _httpClient.GetStringAsync(searchUrl);
+            var searchJson = JObject.Parse(searchResponse);
 
-            var request = new HttpRequestMessage(HttpMethod.Get, url);
+            var item = searchJson["results"]?.FirstOrDefault() ?? searchJson["features"]?.FirstOrDefault();
+            if (item == null) return null;
 
-            // ВНИМАНИЕ: Копируем заголовки ПУЛЯ В ПУЛЮ со скрина
-            request.Headers.TryAddWithoutValidation("Accept", "*/*");
-            request.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate, br, zstd");
-            request.Headers.TryAddWithoutValidation("Accept-Language", "ru,en-US;q=0.9,en;q=0.8,kk;q=0.7");
-            request.Headers.TryAddWithoutValidation("Connection", "keep-alive");
-            request.Headers.TryAddWithoutValidation("Cookie", "MAP_SESSION_ID=8mwBLd9mXCg7TWIzVxR5tQm4bZTyMkC3blw_VWTD; JSESSIONID=N23bdgcDklscFibwOdTO7ZeYZH_WrVxwRjkY3D_T");
-            request.Headers.TryAddWithoutValidation("Host", "map.gov4c.kz");
-            request.Headers.TryAddWithoutValidation("Referer", "https://map.gov4c.kz/egkn/");
-            request.Headers.TryAddWithoutValidation("Sec-Ch-Ua", "\"Chromium\";v=\"146\", \"Not-A.Brand\";v=\"24\", \"Google Chrome\";v=\"146\"");
-            request.Headers.TryAddWithoutValidation("Sec-Ch-Ua-Mobile", "?0");
-            request.Headers.TryAddWithoutValidation("Sec-Ch-Ua-Platform", "\"Windows\"");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Dest", "empty");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Mode", "cors");
-            request.Headers.TryAddWithoutValidation("Sec-Fetch-Site", "same-origin");
-            request.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36");
+            string id = item["id"]?.ToString() ?? item["objectId"]?.ToString();
+            string layer = item["layer"]?.ToString() ?? item["layerName"]?.ToString() ?? "parcel";
 
-            var response = await _httpClient.SendAsync(request);
-            var rawJson = await response.Content.ReadAsStringAsync();
+            // Шаг 2: Получение геометрии
+            // Пробуем основной эндпоинт из твоего списка
+            var geoUrl = $"{BaseUrl}/feature/{layer}/{id}";
+            var geoResponse = await _httpClient.GetStringAsync(geoUrl);
+            var geoJson = JObject.Parse(geoResponse);
 
-            Console.WriteLine($"[RESULT]: {rawJson}"); // Если тут будет {"lands":[]}, значит куки протухли
+            var geometry = geoJson["geometry"] ?? geoJson;
+            var type = geometry["type"]?.ToString();
 
-            var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            var result = System.Text.Json.JsonSerializer.Deserialize<EgknRootResponse>(rawJson, options);
-
-            return result?.Lands?.FirstOrDefault();
-        }
-
-        public (double lat, double lon) GetCenterCoordinates(string wktGeometry)
-        {
-            // Извлекаем все числа из MULTIPOLYGON(((...)))
-            var matches = Regex.Matches(wktGeometry, @"([\d\.]+)\s+([\d\.]+)");
-
-            if (matches.Count == 0) throw new Exception("Не удалось распарсить геометрию участка");
-
-            double sumX = 0, sumY = 0;
-            foreach (Match m in matches)
+            // Извлекаем "сырые" координаты (UTM)
+            var rawCoords = new List<double[]>();
+            if (type == "Polygon")
             {
-                sumX += double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture);
-                sumY += double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+                rawCoords = geometry["coordinates"]?[0]?.ToObject<List<double[]>>();
+            }
+            else if (type == "MultiPolygon")
+            {
+                rawCoords = geometry["coordinates"]?[0]?[0]?.ToObject<List<double[]>>();
             }
 
-            // Берем среднюю точку (центроид)
-            return ConvertUtmToWgs84(sumX / matches.Count, sumY / matches.Count);
+            if (rawCoords == null || rawCoords.Count == 0) return null;
+
+            // Шаг 3: Конвертация (UTM -> WGS84)
+            return ConvertUtmToWgs84(rawCoords);
         }
 
-        private (double lat, double lon) ConvertUtmToWgs84(double x, double y)
+        private List<(double lat, double lon)> ConvertUtmToWgs84(List<double[]> utmCoords)
         {
-            double[] xy = { x, y };
-            double[] z = { 0 };
+            double firstX = utmCoords[0][0];
 
-            // UTM Zone 42N (EPSG:32642) -> WGS84 (EPSG:4326)
-            ProjectionInfo source = ProjectionInfo.FromEpsgCode(32642);
-            ProjectionInfo target = ProjectionInfo.FromEpsgCode(4326);
+            // Определяем зону (как в твоем Python: detect_utm_zone)
+            int epsgCode = 32642; // По умолчанию Центр (Астана/Костанай)
+            if (firstX < 500000) epsgCode = 32640;
+            else if (firstX > 700000) epsgCode = 32643;
 
-            Reproject.ReprojectPoints(xy, z, source, target, 0, 1);
+            // Настройка трансформации через ProjNet
+            var ctFact = new CoordinateTransformationFactory();
+            var csFact = new CoordinateSystemFactory();
 
-            return (lat: xy[1], lon: xy[0]);
+            // UTM (напр. EPSG:32642)
+            var utmCS = csFact.CreateFromWkt($"PROJCS[\"WGS 84 / UTM zone {epsgCode % 100}N\",GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",{(epsgCode % 100 * 6 - 183)}],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1]]");
+
+            // WGS84 (EPSG:4326)
+            var wgs84CS = GeographicCoordinateSystem.WGS84;
+
+            var trans = ctFact.CreateFromCoordinateSystems(utmCS, wgs84CS);
+
+            var result = new List<(double lat, double lon)>();
+            foreach (var coord in utmCoords)
+            {
+                var transformed = trans.MathTransform.Transform(new double[] { coord[0], coord[1] });
+                // ProjNet возвращает [Lon, Lat]
+                result.Add((lat: Math.Round(transformed[1], 7), lon: Math.Round(transformed[0], 7)));
+            }
+
+            return result;
         }
-    }
 
-    // DTO классы для десериализации ответа ЕГКН
-    public class EgknRootResponse
-    {
-        [JsonPropertyName("lands")] public List<EgknLandItem> Lands { get; set; } = new();
-    }
+        public async Task<string> GetWktPolygonAsync(string cadastralNumber)
+        {
+            // 1. Поиск (как мы делали раньше)
+            var searchUrl = $"{BaseUrl}/search?searchText={cadastralNumber}&lang=ru";
+            var response = await _httpClient.GetStringAsync(searchUrl);
+            var json = JObject.Parse(response);
 
-    public class EgknLandItem
-    {
-        [JsonPropertyName("geometry")] public string Geometry { get; set; } = "";
-        [JsonPropertyName("properties")] public EgknProperties Properties { get; set; } = new();
-    }
+            // 2. Достаем значение прямо из того поля, что на скрине
+            // Путь в JSON: lands -> [0] -> geometry
+            var wktGeometry = json["lands"]?[0]?["geometry"]?.ToString();
 
-    public class EgknProperties
-    {
-        [JsonPropertyName("kad_nomer")] public string CadastralNumber { get; set; } = "";
-        [JsonPropertyName("address_ru")] public string Address { get; set; } = "";
-        [JsonPropertyName("area")] public double Area { get; set; }
-        [JsonPropertyName("district_id")] public int DistrictId { get; set; }
+            return wktGeometry; // Вернет "MULTIPOLYGON(((542738.75...)))"
+        }
     }
 }
